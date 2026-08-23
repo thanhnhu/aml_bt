@@ -90,8 +90,8 @@ systemd service that brings `hci0` up on every boot.
 ## I. Get the source
 
 ```bash
-git clone https://github.com/thanhnhu/aml-bt-amlogic-w1.git
-cd aml-bt-amlogic-w1
+git clone https://github.com/thanhnhu/aml_bt.git
+cd aml_bt
 ```
 
 ## II. Install build dependencies
@@ -228,4 +228,30 @@ Logs:
 ```bash
 journalctl -u aml-w1-bt -b
 dmesg | grep btHAL
+```
+
+---
+
+## Build a release manually (GitHub Actions)
+
+Releases are built automatically when a `v*` git tag is pushed. To build for a kernel version that
+has no release yet, trigger the workflow by hand:
+
+1. Repo → **Actions** tab → **Build and Release** → **Run workflow**.
+2. Fill in:
+   - **kernel_version** — your target `uname -r` (e.g. `6.12.30-meson64`).
+   - **headers_deb_url** — URL of the matching `linux-headers` `.deb` from the
+     [devmfc/debian-on-amlogic releases](https://github.com/devmfc/debian-on-amlogic/releases).
+   - **bt_uart** — the tty the BT UART shows up as (default `/dev/ttyS7`).
+   - **release_tag** — leave **empty** to only get a downloadable artifact, or set a tag
+     (e.g. `v6.12.30-meson64-1`) to publish a **Release** as well.
+
+Or with the GitHub CLI:
+
+```bash
+gh workflow run build-release.yml \
+  -f kernel_version=6.12.30-meson64 \
+  -f headers_deb_url=https://github.com/devmfc/debian-on-amlogic/releases/download/v6.12.30/linux-headers-6.12.30-meson64_20250522_arm64.deb \
+  -f bt_uart=/dev/ttyS7 \
+  -f release_tag=v6.12.30-meson64-1   # omit this flag to skip publishing a release
 ```
