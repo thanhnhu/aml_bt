@@ -29,8 +29,8 @@ aml_hciattach ──/dev/ttyS7──> firmware download ──> hci0
 |--------|--------|
 | 4.14 – 5.15 | Original target (Amlogic Android/BSP kernels) |
 | 6.x — mainline | Supported (symbol names, serdev/DT, `platform_driver.remove` signature) |
-| 6.18.40-meson64 ([devmfc/debian-on-amlogic](https://github.com/devmfc/debian-on-amlogic)) | **Tested OK** — BLE + Classic scanning |
-| 6.12.30-meson64 (same image) | Builds, untested |
+| 6.18.40-meson64 ([devmfc/debian-on-amlogic](https://github.com/devmfc/debian-on-amlogic)) | **Tested OK** — BLE + Classic scanning. This is what the [prebuilt release](../../releases) targets |
+| 6.12.30-meson64 (same image) | Builds cleanly in CI, **not tested on hardware**. No prebuilt release — [build it yourself](#build-a-release-manually-github-actions) |
 
 > **Modules are locked to one exact kernel.** `sdio_bt.ko` only loads on the `uname -r` it was
 > built against. The devmfc images ship several kernels side by side, each with **its own DTB
@@ -234,12 +234,13 @@ dmesg | grep btHAL
 
 ## Build a release manually (GitHub Actions)
 
-Releases are built automatically when a `v*` git tag is pushed. To build for a kernel version that
-has no release yet, trigger the workflow by hand:
+The published release targets **6.18.40-meson64** and is built automatically when a `v*` git tag is
+pushed. To build for a *different* kernel that has no release yet, trigger the workflow by hand —
+the example below uses `6.12.30-meson64`, the other kernel devmfc images ship:
 
 1. Repo → **Actions** tab → **Build and Release** → **Run workflow**.
 2. Fill in:
-   - **kernel_version** — your target `uname -r` (e.g. `6.12.30-meson64`).
+   - **kernel_version** — the target `uname -r`, e.g. `6.12.30-meson64`.
    - **headers_deb_url** — URL of the matching `linux-headers` `.deb` from the
      [devmfc/debian-on-amlogic releases](https://github.com/devmfc/debian-on-amlogic/releases).
    - **bt_uart** — the tty the BT UART shows up as (default `/dev/ttyS7`).
