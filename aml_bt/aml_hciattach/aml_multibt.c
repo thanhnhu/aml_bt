@@ -549,8 +549,9 @@ static int set_power_type(void)
     }
 
     if (!write_power_type(&power_type, sizeof(char))) {
-        ALOGE("write power type failed");
-        return -1;
+        /* Mainline kernels have no Amlogic BSP btpower_evt node; on those the
+         * BT core is powered up by the sdio_bt/w1u_bt driver instead. */
+        ALOGE("write power type failed, continuing without BSP power control");
     }
 
     clr_bt_power_bit(power_type);

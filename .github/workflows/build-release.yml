@@ -1,0 +1,138 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Target kernel version (uname -r), e.g. 6.18.40-meson64'
+        required: true
+        default: '6.18.40-meson64'
+      headers_deb_url:
+        description: 'URL to the matching linux-headers .deb (arm64)'
+        required: true
+        default: 'https://github.com/devmfc/debian-on-amlogic/releases/download/v6.18.40/linux-headers-6.18.40-meson64_20260726_arm64.deb'
+      bt_uart:
+        description: 'tty the BT UART shows up as on the box'
+        required: true
+        default: '/dev/ttyS7'
+      release_tag:
+        description: 'Create a Release with this tag (leave empty to only upload an artifact)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+env:
+  DEFAULT_KVER: '6.18.40-meson64'
+  DEFAULT_HEADERS_URL: 'https://github.com/devmfc/debian-on-amlogic/releases/download/v6.18.40/linux-headers-6.18.40-meson64_20260726_arm64.deb'
+  DEFAULT_BT_UART: '/dev/ttyS7'
+
+jobs:
+  build:
+    # Native arm64 runner: the kernel-headers package ships arm64 host tools
+    # (fixdep, modpost, ...), and aml_hciattach is an arm64 userspace binary.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve build parameters
+        id: vars
+        run: |
+          KVER="${{ github.event.inputs.kernel_version || env.DEFAULT_KVER }}"
+          HURL="${{ github.event.inputs.headers_deb_url || env.DEFAULT_HEADERS_URL }}"
+          UART="${{ github.event.inputs.bt_uart || env.DEFAULT_BT_UART }}"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
+          echo "headers_url=$HURL" >> "$GITHUB_OUTPUT"
+          echo "bt_uart=$UART" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc kmod cpio flex bison \
+            libssl-dev libelf-dev perl wget device-tree-compiler
+
+      - name: Download and install kernel headers
+        run: |
+          wget -q -O /tmp/headers.deb "${{ steps.vars.outputs.headers_url }}"
+          sudo dpkg -i /tmp/headers.deb || sudo apt-get -f install -y
+
+      - name: Build sdio_bt.ko
+        run: |
+          KVER="${{ steps.vars.outputs.kver }}"
+          KDIR="/lib/modules/${KVER}/build"
+          if [ ! -d "$KDIR" ]; then KDIR="/usr/src/linux-headers-${KVER}"; fi
+          echo "Using KERNEL_SRC=$KDIR"
+          test -d "$KDIR" || { echo "Kernel headers dir not found"; exit 1; }
+          # aml_sdio.ko is provided by the WiFi driver at runtime, so its symbols
+          # stay unresolved here (safe: CONFIG_MODVERSIONS is off on these kernels).
+          make -C aml_bt/sdio_driver_bt KERNEL_SRC="$KDIR" KBUILD_MODPOST_WARN=1
+          ls -l aml_bt/sdio_driver_bt/sdio_bt.ko
+
+      - name: Build aml_hciattach
+        run: |
+          make -C aml_bt/aml_hciattach \
+            CFLAGS="-Wall -O2 -Wno-unused-function -Wunused-result -Wno-unused-variable -DUART_DEV_PORT_BT=\\\"${{ steps.vars.outputs.bt_uart }}\\\""
+          file aml_bt/aml_hciattach/aml_hciattach
+
+      - name: Build device-tree overlay
+        run: dtc -I dts -O dtb -o dts/aml-w1-bt-uart.dtbo dts/aml-w1-bt-uart.dts
+
+      - name: Package
+        id: pkg
+        run: |
+          KVER="${{ steps.vars.outputs.kver }}"
+          OUT="aml-w1-bt-${KVER}"
+          mkdir -p "dist/${OUT}/firmware"
+          cp aml_bt/sdio_driver_bt/sdio_bt.ko      "dist/${OUT}/"
+          cp aml_bt/aml_hciattach/aml_hciattach    "dist/${OUT}/"
+          cp aml_bt/firmware/w1_bt_fw_uart.bin     "dist/${OUT}/firmware/"
+          cp aml_bt/aml_hciattach/aml_bt_rf.txt    "dist/${OUT}/firmware/"
+          cp aml_bt/aml_hciattach/a2dp_mode_cfg.txt "dist/${OUT}/firmware/"
+          cp aml_bt/aml_hciattach/aml_bt.conf      "dist/${OUT}/firmware/"
+          cp scripts/aml-w1-bt.service             "dist/${OUT}/"
+          cp scripts/install.sh                    "dist/${OUT}/"
+          cp dts/aml-w1-bt-uart.dts dts/aml-w1-bt-uart.dtbo "dist/${OUT}/"
+          chmod +x "dist/${OUT}/install.sh" "dist/${OUT}/aml_hciattach"
+          echo "$KVER" > "dist/${OUT}/KERNEL_VERSION"
+          echo "${{ steps.vars.outputs.bt_uart }}" > "dist/${OUT}/BT_UART"
+          ( cd dist && tar czf "${OUT}.tar.gz" "${OUT}" && sha256sum "${OUT}.tar.gz" > "${OUT}.tar.gz.sha256" )
+          echo "name=${OUT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          body: |
+            Prebuilt **aml_w1** Bluetooth support for kernel `${{ steps.vars.outputs.kver }}`.
+
+            **Install (download and run):**
+            ```bash
+            tar xzf ${{ steps.pkg.outputs.name }}.tar.gz
+            cd ${{ steps.pkg.outputs.name }}
+            sudo ./install.sh
+            sudo reboot        # only needed the first time, to apply the DTB patch
+            ```
+
+            Requires the [aml_w1 WiFi driver](https://github.com/thanhnhu/wifi-amlogic-w1)
+            (`aml_sdio.ko` + `vlsicomm.ko`) to be installed and working first — the BT core is
+            powered up over the WiFi chip's SDIO link.
+
+            > `sdio_bt.ko` only loads on kernel `${{ steps.vars.outputs.kver }}`.
+            > For any other kernel version, build from source (see README).

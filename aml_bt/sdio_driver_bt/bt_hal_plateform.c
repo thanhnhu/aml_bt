@@ -8,9 +8,13 @@
 #include <linux/platform_device.h>
 #include <linux/version.h>
 
-MODULE_IMPORT_NS(W1-AML);
-
 extern unsigned char (*w1_host_wake_w1_req)(void);
+
+/* Upper bounds for the chip handshakes below: without them a chip in a bad
+ * state hangs insmod/rmmod forever, which can wedge the whole system. */
+#define BT_WAKE_RETRY_MAX          500   /* 10ms each */
+#define BT_PMU_ACT_RETRY_MAX       500   /* 5ms each  */
+#define BT_WIFI_INSMOD_RETRY_MAX   500   /* 10ms each */
 static int reg_config_complete = 0;
 static struct cdev BTAML_cdev;
 static int BTAML_major;
@@ -61,13 +65,23 @@ static int config_bt_pmu_reg(bool is_power_on)
     {
         PRINT("BT lock\n");
         w1_aml_wifi_sdio_power_lock();
-        while (w1_host_wake_w1_req() == 0)
+        /* Bounded: this spins while holding the WiFi SDIO power lock. */
+        for (wait_count = 0; wait_count < BT_WAKE_RETRY_MAX; wait_count++)
         {
+            if (w1_host_wake_w1_req() != 0)
+                break;
             msleep(10);
             PRINT("BT insmod, wake wifi failed\n");
         }
         w1_aml_wifi_sdio_power_unlock();
         PRINT("BT unlock\n");
+
+        if (wait_count == BT_WAKE_RETRY_MAX)
+        {
+            PRINT("BT insmod, giving up waking wifi fw\n");
+            return (-1);
+        }
+        wait_count = 0;
     }
     else
     {
@@ -144,12 +158,21 @@ static int config_bt_pmu_reg(bool is_power_on)
         PRINT("%s bt_pmu_status:0x%x\n", __func__, bt_pmu_status);
 
         /* wait bt pmu fsm to PMU_ACT_MODE*/
-        while ((bt_pmu_status & 0xF) != PMU_ACT_MODE)
+        for (wait_count = 0; wait_count < BT_PMU_ACT_RETRY_MAX; wait_count++)
         {
+            if ((bt_pmu_status & 0xF) == PMU_ACT_MODE)
+                break;
             msleep(5);
             PRINT("%s bt_pmu_status:0x%x\n", __func__, bt_pmu_status);
             bt_pmu_status = w1_g_w1_hif_ops.bt_hi_read_word(RG_BT_PMU_A15);
         }
+
+        if (wait_count == BT_PMU_ACT_RETRY_MAX)
+        {
+            PRINT("BT power on: pmu fsm stuck at 0x%x, aborting\n", bt_pmu_status);
+            return (-1);
+        }
+        wait_count = 0;
 
         value_pmu_A12 = w1_g_w1_hif_ops.bt_hi_read_word(RG_BT_PMU_A12);
         value_pmu_A13 = w1_g_w1_hif_ops.bt_hi_read_word(RG_BT_PMU_A13);
@@ -362,10 +385,16 @@ int  bt_aml_sdio_init(void)
 
     //if (!strcmp(chip_name, "aml_w1"))
     {
-        while (w1_wifi_in_insmod)
+        for (cnt = 0; cnt < BT_WIFI_INSMOD_RETRY_MAX && w1_wifi_in_insmod; cnt++)
         {
             PRINT("WIFI in insmod\n");
             msleep(10);
+        }
+
+        if (w1_wifi_in_insmod)
+        {
+            PRINT("WIFI still in insmod, aborting\n");
+            return (-1);
         }
     }
 
@@ -626,11 +655,13 @@ static void bt_aml_rmmod(void)
 {
     //if (amlbt_poweron == AML_SDIO_EN)
     {
+        int cnt;
+
         printk("\n");
         printk("\n");
         printk("\n");
         PRINT("++++++sdio bt driver rmmod start.++++++\n");
-        while (w1_wifi_in_insmod)
+        for (cnt = 0; cnt < BT_WIFI_INSMOD_RETRY_MAX && w1_wifi_in_insmod; cnt++)
         {
             PRINT("WIFI in insmod\n");
             msleep(10);

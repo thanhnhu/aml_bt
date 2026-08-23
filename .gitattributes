@@ -1,0 +1,5 @@
+# Shell scripts and files consumed by Linux tooling must keep LF endings.
+*.sh text eol=lf
+*.service text eol=lf
+*.dts text eol=lf
+*.yml text eol=lf

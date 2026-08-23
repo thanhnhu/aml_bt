@@ -1,0 +1,25 @@
+[Unit]
+Description=Amlogic W155S1 (aml_w1) Bluetooth firmware download and HCI attach
+After=systemd-modules-load.service
+Before=bluetooth.service
+Wants=bluetooth.service
+# Substituted by install-w1-bt.sh. Gone after a kernel update reinstalls an
+# unpatched DTB, in which case the service is skipped instead of restart-looping.
+ConditionPathExists=@BT_UART@
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=forking
+# The BT core must be power-cycled before each firmware download, otherwise
+# aml_hciattach's vendor handshake times out against the already running FW.
+# Only done on start: unloading sdio_bt talks to the chip over the WiFi SDIO
+# link, which can wedge if run during system shutdown.
+ExecStartPre=-/sbin/modprobe -r sdio_bt
+ExecStartPre=/sbin/modprobe sdio_bt
+ExecStart=/usr/local/sbin/aml_hciattach
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * S905X4 (SC2) boxes such as the Magicsee N5 Max X4 boot a DTB that declares a
+ * "realtek,rtl8822cs-bt" child on uart_E (serial@80000) — meson-sc2-x96x4.dtb
+ * in that case. It binds the UART to the serdev bus and prevents a /dev/ttyS*
+ * node from appearing.
+ *
+ * These boards actually carry an Amlogic W155S1 (aml_w1) whose BT core is
+ * driven from userspace by aml_hciattach over the raw tty, so the bogus serdev
+ * child is disabled here to get a plain ttyS port for uart_E.
+ */
+&{/soc/bus@fe000000/serial@80000/bluetooth} {
+	status = "disabled";
+};

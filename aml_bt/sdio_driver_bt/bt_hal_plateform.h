@@ -28,6 +28,17 @@
 #include <linux/timer.h>
 #include <linux/string.h>
 
+/* The mainline/Debian aml_w1 WiFi driver exports these without the w1_ prefix. */
+#define w1_w1_sdio_driver_insmoded      w1_sdio_driver_insmoded
+#define w1_w1_sdio_after_porbe          w1_sdio_after_porbe
+#define w1_g_w1_hif_ops                 g_w1_hif_ops
+#define w1_set_wifi_bt_sdio_driver_bit  set_wifi_bt_sdio_driver_bit
+#define w1_aml_w1_sdio_init             aml_w1_sdio_init
+#define w1_aml_wifi_sdio_power_lock     aml_wifi_sdio_power_lock
+#define w1_aml_wifi_sdio_power_unlock   aml_wifi_sdio_power_unlock
+#define w1_host_wake_w1_req             host_wake_w1_req
+#define w1_wifi_in_insmod               wifi_in_insmod
+
 extern unsigned char w1_w1_sdio_driver_insmoded;
 extern unsigned char w1_w1_sdio_after_porbe;
 extern struct amlw1_hif_ops w1_g_w1_hif_ops;

@@ -1,5 +1,5 @@
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
-M ?= $(PWD)
+M ?= $(CURDIR)
 ###############################################################################
 # AMLBT
 ###############################################################################
@@ -12,9 +12,8 @@ $(AMLBT_MOD_NAME)-objs := $(AMLBT_CFILES:.c=.o)
 ###############################################################################
 # Common
 ###############################################################################
-obj-$(CONFIG_SDIO) += aml_sdio.o
-aml_sdio-objs += w1_sdio.o
-
+# aml_sdio.ko is provided by the WiFi driver (wifi-amlogic-w1); only sdio_bt is
+# built here. Point EXTRA_SYMBOLS_PATH at that driver's Module.symvers.
 obj-m += $(AMLBT_MOD_NAME).o
 
 all:
@@ -26,10 +25,10 @@ modules_install:
 	cd ${OUT_DIR}/$(M)/; find -name "*.ko" -exec cp {} ${OUT_DIR}/../vendor_lib/modules/ \;
 
 usb:
-	make -C $(KERNEL_SRC) M=$(PWD) $(AMLBT_MOD_NAME).ko
+	make -C $(KERNEL_SRC) M=$(M) $(AMLBT_MOD_NAME).ko
 
 clean:
-	make -C $(KERNEL_SRC) M=$(PWD) clean
+	make -C $(KERNEL_SRC) M=$(M) clean
 
 
 
