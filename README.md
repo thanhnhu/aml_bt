@@ -83,8 +83,13 @@ sudo reboot        # only the first time, to apply the device-tree patch
 hciconfig -a
 ```
 
-`install.sh` patches the DTB, installs the module + firmware + `aml_hciattach`, and enables the
-systemd service that brings `hci0` up on every boot.
+`install.sh` patches the DTB and installs `sdio_bt.ko` + firmware. By default it sets up the
+**mainline kernel driver** ([section VIII](#viii-kernel-driver-no-userspace-loader)) — no daemon
+involved. Pass `BT_MODE=hciattach` for the userspace loader instead:
+
+```bash
+sudo BT_MODE=hciattach ./install.sh
+```
 
 > The `.ko` file only loads on the **exact** kernel it was built for. If there is no release for
 > your `uname -r`, build from source below.

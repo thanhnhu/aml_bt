@@ -1,6 +1,11 @@
 #!/bin/bash
 # Install prebuilt aml_w1 Bluetooth support from a release tarball.
 # Run as root:  sudo ./install.sh
+#
+# Two ways to drive the controller; the tarball carries both:
+#   BT_MODE=kernel     mainline hci_aml driver, patched for the W155S1 (default
+#                      when hci_uart.ko is in the tarball). No userspace daemon.
+#   BT_MODE=hciattach  Amlogic's aml_hciattach loader over /dev/ttyS7.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,6 +14,19 @@ TARGET_KVER="$(cat "${DIR}/KERNEL_VERSION" 2>/dev/null || true)"
 BT_UART="${BT_UART:-$(cat "${DIR}/BT_UART" 2>/dev/null || echo /dev/ttyS7)}"
 # DT path of the UART the BT chip is wired to (uart_E on SC2/S905X4).
 BT_DT_NODE="${BT_DT_NODE:-/soc/bus@fe000000/serial@80000/bluetooth}"
+FW_NAME="aml/w1_bt_fw_uart.bin"
+
+if [ -f "${DIR}/hci_uart.ko" ]; then
+    BT_MODE="${BT_MODE:-kernel}"
+else
+    BT_MODE="${BT_MODE:-hciattach}"
+fi
+case "${BT_MODE}" in
+  kernel)
+    [ -f "${DIR}/hci_uart.ko" ] || { echo "ERROR: hci_uart.ko not in this tarball" >&2; exit 1; } ;;
+  hciattach) ;;
+  *) echo "ERROR: BT_MODE must be 'kernel' or 'hciattach'" >&2; exit 1 ;;
+esac
 
 [ "$(id -u)" -eq 0 ] || { echo "Please run as root: sudo ./install.sh" >&2; exit 1; }
 
@@ -46,19 +64,37 @@ if [ -n "${BOOT_REL}" ] && [ "${BOOT_REL}" != "${REL}" ]; then
     echo "         sdio_bt.ko only loads on '${REL}'; it will be missing after a reboot." >&2
 fi
 
-echo "==> Patching device tree (frees the BT UART from the serdev bus)"
+echo "==> Installing for BT_MODE=${BT_MODE}"
+echo "==> Patching device tree"
 NEED_REBOOT=0
 DTB="${DTB:-$(find_dtb || true)}"
 if [ -z "${DTB}" ] || [ ! -f "${DTB}" ]; then
     echo "    SKIPPED: could not locate the active DTB, set DTB=/path/to.dtb" >&2
-elif [ "$(fdtget -t s "${DTB}" "${BT_DT_NODE}" status 2>/dev/null || true)" = "disabled" ]; then
-    echo "    already patched: ${DTB}"
 else
     [ -f "${DTB}.orig" ] || cp "${DTB}" "${DTB}.orig"
-    fdtput -t s "${DTB}" "${BT_DT_NODE}" status disabled
+    if [ "${BT_MODE}" = kernel ]; then
+        # Point the node at the real chip so hci_aml binds to the serdev port.
+        want_status=okay
+        if [ "$(fdtget -t s "${DTB}" "${BT_DT_NODE}" compatible 2>/dev/null || true)" != "amlogic,w155s1-bt" ] ||
+           [ "$(fdtget -t s "${DTB}" "${BT_DT_NODE}" status 2>/dev/null || true)" != "${want_status}" ]; then
+            fdtput -t s "${DTB}" "${BT_DT_NODE}" compatible "amlogic,w155s1-bt"
+            fdtput -t s "${DTB}" "${BT_DT_NODE}" firmware-name "${FW_NAME}"
+            fdtput -t s "${DTB}" "${BT_DT_NODE}" status "${want_status}"
+            NEED_REBOOT=1
+        fi
+    else
+        # Free the UART from the serdev bus so a plain /dev/ttyS* appears.
+        if [ "$(fdtget -t s "${DTB}" "${BT_DT_NODE}" status 2>/dev/null || true)" != "disabled" ]; then
+            fdtput -t s "${DTB}" "${BT_DT_NODE}" status disabled
+            NEED_REBOOT=1
+        fi
+    fi
     dtc -I dtb -O dts "${DTB}" > /dev/null
-    echo "    patched ${DTB} (backup: ${DTB}.orig)"
-    NEED_REBOOT=1
+    if [ "${NEED_REBOOT}" -eq 1 ]; then
+        echo "    patched ${DTB} (backup: ${DTB}.orig)"
+    else
+        echo "    already correct: ${DTB}"
+    fi
 fi
 
 echo "==> Installing sdio_bt.ko"
@@ -77,14 +113,28 @@ install -m 644 "${DIR}/firmware/aml_bt_rf.txt"      /lib/firmware/aml/
 install -m 644 "${DIR}/firmware/a2dp_mode_cfg.txt"  /lib/firmware/aml/
 install -m 644 "${DIR}/firmware/aml_bt.conf"        /lib/firmware/aml/
 
-echo "==> Installing systemd service"
-sed "s|@BT_UART@|${BT_UART}|" "${DIR}/aml-w1-bt.service" > /etc/systemd/system/aml-w1-bt.service
-systemctl daemon-reload
-systemctl enable aml-w1-bt.service
+if [ "${BT_MODE}" = kernel ]; then
+    echo "==> Installing patched hci_uart.ko"
+    install -D -m 644 "${DIR}/hci_uart.ko" "/lib/modules/${REL}/updates/hci_uart.ko"
+    depmod -a
+    # hci_aml probes a chip the SDIO side must have powered up already.
+    grep -qx sdio_bt /etc/modules || echo sdio_bt >> /etc/modules
+    systemctl disable --now aml-w1-bt.service 2>/dev/null || true
+else
+    echo "==> Installing systemd service"
+    rm -f "/lib/modules/${REL}/updates/hci_uart.ko"
+    depmod -a
+    sed -i '/^sdio_bt$/d' /etc/modules
+    sed "s|@BT_UART@|${BT_UART}|" "${DIR}/aml-w1-bt.service" > /etc/systemd/system/aml-w1-bt.service
+    systemctl daemon-reload
+    systemctl enable aml-w1-bt.service
+fi
 
 echo
 if [ "${NEED_REBOOT}" -eq 1 ]; then
     echo "Done. Reboot to apply the device-tree patch, then check:  hciconfig -a"
+elif [ "${BT_MODE}" = kernel ]; then
+    echo "Done. Reboot to rebind the controller, then check:  hciconfig -a"
 else
     systemctl restart aml-w1-bt.service
     echo "Done. Check the adapter with:  hciconfig -a"

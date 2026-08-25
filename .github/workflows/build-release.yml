@@ -82,6 +82,40 @@ jobs:
       - name: Build device-tree overlay
         run: dtc -I dts -O dtb -o dts/aml-w1-bt-uart.dtbo dts/aml-w1-bt-uart.dts
 
+      - name: Build patched hci_uart.ko (mainline kernel driver)
+        id: hciuart
+        run: |
+          KVER="${{ steps.vars.outputs.kver }}"
+          KBASE="${KVER%%-*}"
+          KDIR="/lib/modules/${KVER}/build"
+          if [ ! -d "$KDIR" ]; then KDIR="/usr/src/linux-headers-${KVER}"; fi
+          # Debian headers ship only Kconfig/Makefile for drivers/bluetooth.
+          mkdir -p /tmp/btsrc
+          URL="https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux/+archive/refs/tags/v${KBASE}/drivers/bluetooth.tar.gz"
+          curl -fsSL -o /tmp/bt.tar.gz "$URL"
+          tar xzf /tmp/bt.tar.gz -C /tmp/btsrc
+          # hci_aml.c only exists from 6.13 on; older kernels get the hciattach path only.
+          if [ ! -f /tmp/btsrc/hci_aml.c ]; then
+            echo "v${KBASE} has no drivers/bluetooth/hci_aml.c - skipping"
+            echo "built=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          patch -d /tmp/btsrc -p3 < kernel/hci_aml-w155s1.patch
+          {
+            echo 'obj-m += hci_uart.o'
+            printf 'hci_uart-y := hci_ldisc.o'
+            for opt in SERDEV:hci_serdev H4:hci_h4 BCSP:hci_bcsp LL:hci_ll ATH3K:hci_ath \
+                       3WIRE:hci_h5 INTEL:hci_intel BCM:hci_bcm QCA:hci_qca \
+                       AG6XX:hci_ag6xx MRVL:hci_mrvl AML:hci_aml; do
+              if grep -qx "CONFIG_BT_HCIUART_${opt%%:*}=y" "$KDIR/.config"; then
+                printf ' %s.o' "${opt##*:}"
+              fi
+            done
+            echo
+          } > /tmp/btsrc/Makefile
+          make -C "$KDIR" M=/tmp/btsrc modules
+          ls -l /tmp/btsrc/hci_uart.ko
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
       - name: Package
         id: pkg
         run: |
@@ -97,6 +131,9 @@ jobs:
           cp scripts/aml-w1-bt.service             "dist/${OUT}/"
           cp scripts/install.sh                    "dist/${OUT}/"
           cp dts/aml-w1-bt-uart.dts dts/aml-w1-bt-uart.dtbo "dist/${OUT}/"
+          if [ "${{ steps.hciuart.outputs.built }}" = "true" ]; then
+            cp /tmp/btsrc/hci_uart.ko "dist/${OUT}/"
+          fi
           chmod +x "dist/${OUT}/install.sh" "dist/${OUT}/aml_hciattach"
           echo "$KVER" > "dist/${OUT}/KERNEL_VERSION"
           echo "${{ steps.vars.outputs.bt_uart }}" > "dist/${OUT}/BT_UART"
