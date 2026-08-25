@@ -1,0 +1,70 @@
+From: Amlogic W155S1 port
+Subject: [PATCH] Bluetooth: hci_aml: add support for the W155S1 controller
+
+The W155S1 uses the same TCI command set, register map and firmware
+layout as the W155S2 (256 KB ICCM offset, DCCM at offset 0), so it needs
+no changes to the download or configuration paths.
+
+It does need a longer wait after the hardware reset: its CPU takes about
+600 ms to come up, while aml_setup() waits a fixed 60 ms. With the short
+wait the first vendor command after the reset (0xFC1A, read firmware
+version) always times out:
+
+  Bluetooth: hci0: command 0xfc1a tx timeout
+  Bluetooth: hci0: Failed to get fw version (error: -110)
+
+Amlogic's own userspace loader (aml_hciattach) waits 600 ms at the same
+point (MAC_DELAY in hciattach_aml.c).
+
+Turn the wait into per-device data instead of hardcoding it, and add the
+w155s1 compatible.
+
+Tested on a Magicsee N5 Max X4 (S905X4/SC2) with W155S1 on uart_E,
+Linux 6.18.40. After the change the controller answers 0xFC1A, hci0
+comes up with a valid bdaddr, and A2DP playback works.
+
+--- a/drivers/bluetooth/hci_aml.c
++++ b/drivers/bluetooth/hci_aml.c
+@@ -89,6 +89,8 @@
+ struct aml_device_data {
+ 	int iccm_offset;
+ 	int dccm_offset;
++	/* time the controller CPU needs to boot after the hardware reset */
++	unsigned int startup_delay_ms;
+ 	bool is_coex;
+ };
+ 
+@@ -604,8 +606,7 @@
+ 	if (err)
+ 		return err;
+ 
+-	/* Wait 60ms for controller startup */
+-	msleep(60);
++	msleep(amldev->aml_dev_data->startup_delay_ms);
+ 
+ 	err = aml_dump_fw_version(hdev);
+ 	if (err)
+@@ -714,15 +715,23 @@
+ 	hci_uart_unregister_device(&amldev->serdev_hu);
+ }
+ 
++static const struct aml_device_data data_w155s1 = {
++	.iccm_offset = 256 * 1024,
++	.startup_delay_ms = 600,
++};
++
+ static const struct aml_device_data data_w155s2 = {
+ 	.iccm_offset = 256 * 1024,
++	.startup_delay_ms = 60,
+ };
+ 
+ static const struct aml_device_data data_w265s2 = {
+ 	.iccm_offset = 384 * 1024,
++	.startup_delay_ms = 60,
+ };
+ 
+ static const struct of_device_id aml_bluetooth_of_match[] = {
++	{ .compatible = "amlogic,w155s1-bt", .data = &data_w155s1 },
+ 	{ .compatible = "amlogic,w155s2-bt", .data = &data_w155s2 },
+ 	{ .compatible = "amlogic,w265s2-bt", .data = &data_w265s2 },
+ 	{ /* sentinel */ },

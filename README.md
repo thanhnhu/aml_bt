@@ -21,6 +21,10 @@ sdio_bt.ko  ──SDIO──> PMU power-on            │ UART (uart_E)
 aml_hciattach ──/dev/ttyS7──> firmware download ──> hci0
 ```
 
+> Since Linux 6.13 the kernel has its own driver for this family (`hci_aml`), which replaces
+> `aml_hciattach` entirely. It needs a one-line patch to support the W155S1 — see
+> [section VIII](#viii-kernel-driver-no-userspace-loader).
+
 ## Compatibility
 
 ### Kernels
@@ -210,6 +214,57 @@ on a mainline kernel:
 | `aml_hciattach/aml_multibt.c` | Missing Amlogic-BSP `btpower_evt` sysfs node is no longer fatal — `sdio_bt.ko` handles power instead |
 
 `scripts/` and `dts/` at the repository root are not part of the vendor drop.
+
+---
+
+## VIII. Kernel driver (no userspace loader)
+
+Mainline `drivers/bluetooth/hci_aml.c` (Linux 6.13+) does everything `aml_hciattach` does, in
+kernel space: firmware download, RF config, chip start, `hci0`. It ships support for the W155S2 and
+W265S2 but not the **W155S1** — and with the W155S2 settings the W155S1 dies right after the
+firmware download:
+
+```
+Bluetooth: hci0: command 0xfc1a tx timeout
+Bluetooth: hci0: Failed to get fw version (error: -110)
+```
+
+Everything else matches: same TCI opcodes, same register map, same `[8B header][ICCM][DCCM]`
+firmware layout, same 256 KB ICCM offset. The only difference is how long the controller CPU takes
+to boot after the hardware reset — **600 ms on the W155S1, against the 60 ms `aml_setup()` waits**.
+Amlogic's own loader waits exactly 600 ms at the same point (`MAC_DELAY` in `hciattach_aml.c`).
+
+`kernel/hci_aml-w155s1.patch` turns that wait into per-device data and adds an
+`amlogic,w155s1-bt` compatible.
+
+```bash
+sudo ./scripts/install-kernel-bt.sh
+sudo reboot
+dmesg | grep fw_version        # Bluetooth: hci0: fw_version: date = 52.26, number = 0x7458
+```
+
+The script fetches `drivers/bluetooth` for your exact kernel version from upstream (Debian headers
+ship only its `Kconfig`/`Makefile`), applies the patch, builds `hci_uart.ko` against the protocols
+your kernel enables, installs it to `/lib/modules/$(uname -r)/updates/`, repoints the DTB node at
+`amlogic,w155s1-bt`, and disables `aml-w1-bt.service`.
+
+`sdio_bt.ko` is still required — it powers the BT core over SDIO before the serdev driver probes —
+so run `install-w1-bt.sh` first. The DT node needs `enable-gpios`, `firmware-name`, `vddio-supply`
+and an `lpo` clock; the stock Realtek node already provides all but `firmware-name`.
+
+**Tested on 6.18.40-meson64 / Magicsee N5 Max X4:** `hci0` up with a real BD address, Classic +
+BLE scanning, A2DP playback to a Bluetooth speaker, zero `tx timeout`s.
+
+To go back to the userspace loader:
+
+```bash
+sudo rm /lib/modules/$(uname -r)/updates/hci_uart.ko && sudo depmod -a
+sudo sed -i '/^sdio_bt$/d' /etc/modules
+sudo ./scripts/install-w1-bt.sh && sudo reboot
+```
+
+> Re-pairing is needed when switching either way: the two paths derive different BD addresses, so
+> BlueZ sees a different adapter and starts with an empty pairing database.
 
 ---
 
